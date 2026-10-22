@@ -1,0 +1,51 @@
+{
+  "name": "mailchat-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MailChat web app: end-to-end encrypted chat that travels as email",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/master-eugene/mailchat.git",
+    "directory": "frontend"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.sw.json --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "i18n:check": "node scripts/i18n.mjs check",
+    "i18n:new": "node scripts/i18n.mjs new"
+  },
+  "dependencies": {
+    "axios": "^1.7.4",
+    "dayjs": "^1.11.13",
+    "dexie": "^4.4.2",
+    "dexie-react-hooks": "^4.4.0",
+    "i18next": "^23.12.2",
+    "libsodium-wrappers": "^0.8.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-i18next": "^15.0.0",
+    "react-textarea-autosize": "^8.5.3",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/libsodium-wrappers": "^0.7.14",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.1.2",
+    "esbuild": "^0.27.7",
+    "postcss": "^8.5.14",
+    "prettier": "^3.2.5",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.4.5",
+    "vite": "^7.3.0"
+  }
+}

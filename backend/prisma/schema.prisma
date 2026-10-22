@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// New accounts wait until an admin sets approvedAt (see `npm run approve`).
+model User {
+  id                String             @id @default(cuid())
+  username          String             @unique
+  passwordHash      String
+  publicKey         String
+  approvedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  pushSubscriptions PushSubscription[]
+  mailbox           MailboxMessage[]   @relation("MailboxRecipient")
+  receipts          DeliveryReceipt[]  @relation("ReceiptSender")
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// An encrypted message that arrived over SMTP and hasn't been acknowledged by the
+// recipient's device yet. Only ciphertext is stored, and the row is deleted on ack or expiry.
+model MailboxMessage {
+  id          String   @id
+  recipientId String
+  envelope    String
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  recipient   User     @relation("MailboxRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId])
+  @@index([expiresAt])
+}
+
+// "Delivered" tick waiting to reach the sender's device.
+model DeliveryReceipt {
+  id          String   @id @default(cuid())
+  senderId    String
+  messageId   String
+  deliveredAt DateTime @default(now())
+  expiresAt   DateTime
+  sender      User     @relation("ReceiptSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([senderId])
+  @@index([expiresAt])
+}

@@ -1,0 +1,22 @@
+# Dependencies and builds
+node_modules/
+dist/
+build/
+*.tgz
+
+# Local data and secrets
+backups/
+.env
+.env.*
+!.env.example
+backend/prisma/*.db
+backend/prisma/*.db-journal
+
+# Editors and OS
+.idea/
+.vscode/
+.claude/
+.DS_Store
+
+# Logs
+npm-debug.log*

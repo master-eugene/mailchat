@@ -1,0 +1,121 @@
+@import 'tailwindcss';
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  /* Pinned to the visible area. --app-height follows the space above the on-screen keyboard
+     (set in App.tsx), so the message bar stays put instead of the whole page sliding. */
+  :root {
+    --safe-bottom: env(safe-area-inset-bottom);
+  }
+
+  :root[data-keyboard='open'] {
+    --safe-bottom: 0px;
+  }
+
+  #root {
+    position: fixed;
+    inset: 0 0 auto 0;
+    width: 100%;
+    height: var(--app-height, 100dvh);
+    overflow: hidden;
+  }
+
+  body {
+    font-family:
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      sans-serif;
+    background: var(--mc-bg);
+    color: var(--mc-text);
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :root {
+    color-scheme: dark;
+  }
+
+  :root[data-theme='light'] {
+    color-scheme: light;
+  }
+
+  :root {
+    --mc-bg: #0f1621;
+    --mc-panel: #18212f;
+    --mc-panel-strong: #253042;
+    --mc-input: #121a26;
+    --mc-border: rgba(255, 255, 255, 0.08);
+    --mc-text: #f3f6fa;
+    --mc-muted: rgba(226, 232, 240, 0.58);
+    --mc-accent: #3b9eff;
+    --mc-bubble-own: #2b78d6;
+    --mc-bubble-in: #1f2a3a;
+    --mc-danger: #f0605d;
+  }
+
+  :root[data-theme='light'] {
+    --mc-bg: #f2f5f9;
+    --mc-panel: #ffffff;
+    --mc-panel-strong: #e6ecf3;
+    --mc-input: #ffffff;
+    --mc-border: rgba(15, 23, 42, 0.1);
+    --mc-text: #0f172a;
+    --mc-muted: rgba(15, 23, 42, 0.56);
+    --mc-accent: #1f7ae0;
+    --mc-bubble-own: #2b7fe0;
+    --mc-bubble-in: #ffffff;
+    --mc-danger: #d64040;
+  }
+}
+
+@keyframes toast-top-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-top-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+}
+
+@keyframes toast-bottom-in {
+  0% {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-bottom-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+}

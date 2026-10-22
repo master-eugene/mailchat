@@ -1,0 +1,33 @@
+# Started by `./mailchat install`; settings come from the .env file next to this one.
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      FRONTEND_ORIGIN: ${PUBLIC_URL:-https://${DOMAIN}}
+      # Chat addresses are login@MAIL_DOMAIN; defaults to the web domain.
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-${DOMAIN}}
+      VAPID_SUBJECT: mailto:${ADMIN_EMAIL}
+    volumes:
+      - mailchat-data:/data
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - '${HTTP_PORT:-80}:80'
+      - '${HTTPS_PORT:-443}:443'
+      - '${HTTPS_PORT:-443}:443/udp'
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-${DOMAIN}}
+      ACME_EMAIL: ${ADMIN_EMAIL}
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  mailchat-data:
+  caddy-data:
+  caddy-config:

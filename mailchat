@@ -1,0 +1,754 @@
+#!/usr/bin/env bash
+# MailChat server helper. Run `mailchat` for the menu, or `mailchat help` for all commands.
+# Everything runs in Docker; the only file you edit by hand (if ever) is .env.
+set -euo pipefail
+
+# Works when called through the /usr/local/bin/mailchat link: find the real install folder.
+resolve_home() {
+  local source="${BASH_SOURCE[0]}" dir
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ $source != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+MAILCHAT_HOME="$(resolve_home)"
+cd "$MAILCHAT_HOME"
+
+LINK_PATH="/usr/local/bin/mailchat"
+if [ "$(readlink "$LINK_PATH" 2>/dev/null || true)" = "$MAILCHAT_HOME/mailchat" ]; then CMD="mailchat"; else CMD="./mailchat"; fi
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+ok() { printf '\033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!\033[0m %s\n' "$*"; }
+fail() {
+  printf '\033[31m✗ %s\033[0m\n' "$*" >&2
+  exit 1
+}
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ] && ! docker info >/dev/null 2>&1; then
+  command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+fi
+compose() { $SUDO docker compose "$@"; }
+in_backend() { compose exec -T backend "$@"; }
+users() { in_backend npm run --silent users -- "$@"; }
+
+require_installed() {
+  [ -f .env ] || fail "MailChat isn't installed here yet. Run: $CMD install"
+}
+
+env_value() { grep -E "^$1=" .env 2>/dev/null | head -n1 | cut -d= -f2- || true; }
+
+has_terminal() { (: </dev/tty) 2>/dev/null; }
+
+ask() {
+  local prompt="$1" default="${2:-}" answer
+  has_terminal || fail "No terminal to ask \"$prompt\". Run the command interactively."
+  if [ -n "$default" ]; then
+    read -r -p "$prompt [$default]: " answer </dev/tty
+    echo "${answer:-$default}"
+  else
+    read -r -p "$prompt: " answer </dev/tty
+    echo "$answer"
+  fi
+}
+
+# ---------------------------------------------------------------- global command
+
+cmd_link() {
+  local target dir sudo_link=""
+  target="$(readlink "$LINK_PATH" 2>/dev/null || true)"
+  if [ -e "$LINK_PATH" ] && [ "$target" != "$MAILCHAT_HOME/mailchat" ] && [ "${1:-}" != "--force" ]; then
+    warn "$LINK_PATH already exists and points elsewhere. Use: ./mailchat link --force"
+    return 1
+  fi
+  dir="$(dirname "$LINK_PATH")"
+  { [ -d "$dir" ] && [ -w "$dir" ]; } || sudo_link="sudo"
+  $sudo_link mkdir -p "$dir"
+  $sudo_link ln -sf "$MAILCHAT_HOME/mailchat" "$LINK_PATH"
+  CMD="mailchat"
+  ok "You can now type \"mailchat\" from any folder"
+}
+
+cmd_unlink() {
+  [ "$(readlink "$LINK_PATH" 2>/dev/null || true)" = "$MAILCHAT_HOME/mailchat" ] || fail "$LINK_PATH isn't this MailChat."
+  local sudo_link=""
+  [ -w "$(dirname "$LINK_PATH")" ] || sudo_link="sudo"
+  $sudo_link rm -f "$LINK_PATH"
+  ok "Removed the global \"mailchat\" command"
+}
+
+# ---------------------------------------------------------------- install
+
+ensure_docker() {
+  if command -v docker >/dev/null 2>&1 && $SUDO docker compose version >/dev/null 2>&1; then
+    ok "Docker is installed"
+    return
+  fi
+  [ "$(uname -s)" = "Linux" ] || fail "Please install Docker Desktop first: https://www.docker.com/products/docker-desktop/"
+  bold "Installing Docker (this takes a minute or two)..."
+  curl -fsSL https://get.docker.com | $SUDO sh
+  $SUDO systemctl enable --now docker >/dev/null 2>&1 || true
+  ok "Docker installed"
+}
+
+# Building MailChat needs about 2 GB of memory; small servers get a swap file so the build doesn't crash.
+ensure_memory() {
+  [ "$(uname -s)" = "Linux" ] || return 0
+  local mem_mb swap_mb
+  mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+  swap_mb=$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo)
+  if [ "$mem_mb" -lt 1900 ] && [ "$swap_mb" -lt 1000 ]; then
+    bold "This server has ${mem_mb} MB of memory; adding 2 GB of swap space..."
+    $SUDO fallocate -l 2G /swapfile 2>/dev/null || $SUDO dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+    $SUDO chmod 600 /swapfile
+    $SUDO mkswap /swapfile >/dev/null
+    $SUDO swapon /swapfile
+    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | $SUDO tee -a /etc/fstab >/dev/null
+    ok "Swap space added"
+  fi
+}
+
+check_dns() {
+  local domain="$1" server_ip domain_ip
+  server_ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  domain_ip="$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
+  [ -z "$domain_ip" ] && domain_ip="$(dig +short "$domain" 2>/dev/null | tail -n1 || true)"
+
+  if [ -z "$domain_ip" ]; then
+    warn "$domain doesn't point anywhere yet. Add an A record for it (see docs/INSTALL.md, step 3)."
+    return 1
+  fi
+  if [ -n "$server_ip" ] && [ "$domain_ip" != "$server_ip" ]; then
+    warn "$domain points to $domain_ip, but this server is $server_ip."
+    return 1
+  fi
+  ok "$domain points to this server ($domain_ip)"
+}
+
+open_firewall() {
+  if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q "Status: active"; then
+    $SUDO ufw allow 80/tcp >/dev/null && $SUDO ufw allow 443/tcp >/dev/null && $SUDO ufw allow 443/udp >/dev/null
+    ok "Opened ports 80 and 443 in the firewall"
+  fi
+}
+
+wait_until_ready() {
+  local url="$1"
+  printf 'Waiting for MailChat to start'
+  for _ in $(seq 1 90); do
+    if curl -fsS --max-time 5 "$url/health" >/dev/null 2>&1; then
+      echo
+      return 0
+    fi
+    printf '.'
+    sleep 2
+  done
+  echo
+  return 1
+}
+
+port_in_use() { ss -ltnH "sport = :$1" 2>/dev/null | grep -q .; }
+
+port_owner() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'users:(("[^"]*' | head -n1 | cut -d'"' -f2; }
+
+free_local_port() {
+  local port
+  for port in $(seq "$1" "$(($1 + 50))"); do
+    port_in_use "$port" || {
+      echo "$port"
+      return
+    }
+  done
+  fail "No free port found near $1."
+}
+
+behind_nginx() { [ "$(env_value BEHIND_NGINX)" = "1" ]; }
+
+# Where MailChat itself answers: on this machine when nginx is in front, else the public URL.
+health_url() {
+  if behind_nginx; then
+    echo "http://127.0.0.1:$(env_value HTTP_PORT | awk -F: '{print $NF}')"
+  else
+    site_url
+  fi
+}
+
+# An nginx site that forwards the domain to MailChat (including the live WebSocket).
+write_nginx_site() {
+  local domain="$1" port="$2" file="/etc/nginx/sites-available/$1"
+  if [ -e "$file" ]; then
+    warn "$file already exists; leaving it as it is."
+  else
+    $SUDO tee "$file" >/dev/null <<NGINX
+# MailChat, created by "mailchat install". HTTPS is added by "mailchat https".
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $domain;
+
+    client_max_body_size 1m;
+
+    location /ws {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 1h;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+NGINX
+  fi
+  $SUDO ln -sf "$file" "/etc/nginx/sites-enabled/$domain"
+  if ! $SUDO nginx -t >/dev/null 2>&1; then
+    $SUDO rm -f "/etc/nginx/sites-enabled/$domain"
+    $SUDO nginx -t || true
+    fail "The new nginx site has an error, so it was disabled again. Your other sites are unchanged."
+  fi
+  $SUDO systemctl reload nginx
+  ok "Added nginx site for $domain"
+}
+
+# Gets the HTTPS certificate for a MailChat that runs behind nginx (needs DNS to be ready).
+cmd_https() {
+  require_installed
+  behind_nginx || fail "This MailChat gets its certificate automatically; nothing to do."
+  local domain email
+  domain="$(env_value DOMAIN)"
+  email="$(env_value ADMIN_EMAIL)"
+  check_dns "$domain" || fail "Point $domain to this server first, then run: $CMD https"
+  command -v certbot >/dev/null 2>&1 || fail "certbot isn't installed. Install it (apt-get install -y certbot python3-certbot-nginx) and try again."
+  $SUDO certbot --nginx -d "$domain" --non-interactive --agree-tos -m "$email" --redirect
+  ok "HTTPS is on: https://$domain"
+}
+
+# Answers can also come from MAILCHAT_DOMAIN and MAILCHAT_EMAIL (used by install.sh).
+# MAILCHAT_MAIL_DOMAIN makes chat addresses login@that-domain instead of login@DOMAIN
+# (e.g. the app at chat.example.com, addresses like anna@example.com).
+cmd_install() {
+  bold "MailChat installer"
+  echo
+
+  if [ -f .env ]; then
+    warn "MailChat is already installed here ($(env_value DOMAIN))."
+    echo "To change settings, edit $MAILCHAT_HOME/.env and run: $CMD restart"
+    exit 0
+  fi
+
+  if [ "$(uname -s)" = "Linux" ] && [ "$CMD" != "mailchat" ]; then cmd_link || true; fi
+
+  local domain email
+  if [ -z "${MAILCHAT_DOMAIN:-}" ]; then
+    echo
+    echo "MailChat needs a domain (or subdomain) that points to this server,"
+    echo "for example chat.example.com. See docs/INSTALL.md if you don't have one yet."
+    echo
+  fi
+  domain="${MAILCHAT_DOMAIN:-$(ask "Your domain")}"
+  domain="${domain#http://}"
+  domain="${domain#https://}"
+  domain="${domain%%/*}"
+  domain="$(echo "$domain" | tr '[:upper:]' '[:lower:]')"
+  [[ "$domain" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || fail "\"$domain\" doesn't look like a domain."
+
+  email="${MAILCHAT_EMAIL:-$(ask "Your email (only for the HTTPS certificate)")}"
+  [[ "$email" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || fail "\"$email\" doesn't look like an email address."
+
+  echo
+  if ! check_dns "$domain"; then
+    echo "MailChat can still be installed, but the HTTPS certificate will only work once the"
+    echo "domain points here. DNS changes can take up to an hour."
+    if [ -z "${MAILCHAT_DOMAIN:-}" ]; then
+      local go_on
+      go_on="$(ask "Continue anyway? (yes/no)" "no")"
+      [ "$go_on" = "yes" ] || fail "Stopped. Fix the domain, then run $CMD install again."
+    fi
+  fi
+
+  local dns_ready=1 nginx_mode=0 port=""
+  check_dns "$domain" >/dev/null 2>&1 || dns_ready=0
+
+  # A web server already using 80/443: run MailChat privately and let nginx forward to it.
+  if port_in_use 80 || port_in_use 443; then
+    local owner
+    owner="$(port_owner 80)"
+    [ -n "$owner" ] || owner="$(port_owner 443)"
+    if [ "$owner" = "nginx" ]; then
+      nginx_mode=1
+      port="$(free_local_port 8081)"
+      ok "nginx already serves websites here; MailChat will run behind it on 127.0.0.1:$port"
+    else
+      fail "Ports 80/443 are used by \"${owner:-another program}\". MailChat can share them only with nginx."
+    fi
+  fi
+
+  ensure_docker
+  open_firewall
+  ensure_memory
+
+  umask 077
+  if [ "$nginx_mode" -eq 1 ]; then
+    cat >.env <<EOF
+# MailChat settings. After editing, run: mailchat restart
+DOMAIN=$domain
+ADMIN_EMAIL=$email${MAILCHAT_MAIL_DOMAIN:+
+MAIL_DOMAIN=$MAILCHAT_MAIL_DOMAIN}
+# Behind the existing nginx: MailChat only listens on this machine; nginx handles HTTPS.
+BEHIND_NGINX=1
+SITE_ADDRESS=:80
+PUBLIC_URL=https://$domain
+HTTP_PORT=127.0.0.1:$port
+HTTPS_PORT=127.0.0.1:$(free_local_port 8444)
+EOF
+  else
+    cat >.env <<EOF
+# MailChat settings. After editing, run: mailchat restart
+DOMAIN=$domain
+ADMIN_EMAIL=$email${MAILCHAT_MAIL_DOMAIN:+
+MAIL_DOMAIN=$MAILCHAT_MAIL_DOMAIN}
+EOF
+  fi
+  ok "Saved settings to $MAILCHAT_HOME/.env"
+
+  echo
+  bold "Building and starting MailChat (the first time takes a few minutes)..."
+  compose up -d --build
+
+  if [ "$nginx_mode" -eq 1 ]; then
+    wait_until_ready "http://127.0.0.1:$port" || fail "MailChat didn't start. See: $CMD logs"
+    write_nginx_site "$domain" "$port"
+    if [ "$dns_ready" -eq 1 ]; then
+      cmd_https || warn "Couldn't get the certificate yet. Try again later with: $CMD https"
+    else
+      echo
+      warn "MailChat is running, but $domain doesn't point here yet."
+      echo "  After you add the DNS record, run:  $CMD https"
+    fi
+  elif wait_until_ready "https://$domain"; then
+    echo
+    ok "MailChat is running at https://$domain"
+  else
+    echo
+    warn "MailChat started, but https://$domain isn't answering yet."
+    echo "This is usually the domain not pointing here yet. Check with: $CMD logs"
+  fi
+
+  cat <<EOF
+
+$(bold "Next steps")
+  1. Open https://$domain on your phone, add it to your Home Screen, and create your account.
+  2. Approve it: run "$CMD" and choose "Approve new accounts".
+  3. Sign in and turn on notifications (see docs/USER_GUIDE.md).
+
+Run "$CMD" any time to approve people and look after your server.
+EOF
+}
+
+# ---------------------------------------------------------------- everyday commands
+
+cmd_approve() {
+  require_installed
+  if [ $# -eq 0 ]; then
+    users list pending
+    echo
+    echo "To approve someone: $CMD approve THEIR_LOGIN   (or run \"$CMD\" for the menu)"
+  else
+    users approve "$@"
+  fi
+}
+
+cmd_reject() {
+  require_installed
+  [ $# -gt 0 ] || fail "Usage: $CMD delete LOGIN"
+  users delete "$@"
+}
+
+is_running() { [ -n "$(compose ps --status running -q backend 2>/dev/null || true)" ]; }
+
+site_url() {
+  local url
+  url="$(env_value PUBLIC_URL)"
+  echo "${url:-https://$(env_value DOMAIN)}"
+}
+
+cmd_status() {
+  require_installed
+  compose ps
+  if curl -fsS --max-time 5 "$(health_url)/health" >/dev/null 2>&1; then ok "MailChat is up ($(site_url))"; else warn "MailChat isn't answering at $(health_url)"; fi
+  if behind_nginx && ! curl -fsS --max-time 5 "$(site_url)/health" >/dev/null 2>&1; then
+    warn "$(site_url) isn't reachable from here yet. If DNS is ready, run: $CMD https"
+  fi
+}
+
+cmd_backup() {
+  require_installed
+  mkdir -p backups
+  local file
+  file="backups/mailchat-$(date +%Y%m%d-%H%M%S).tar.gz"
+  in_backend sh -c 'cd /data && tar czf - .' >"$file"
+  chmod 600 "$file"
+  ok "Backup saved to $MAILCHAT_HOME/$file"
+  echo "It contains user accounts and server secrets (no messages). Keep it somewhere safe."
+}
+
+cmd_restore() {
+  require_installed
+  local file="${1:-}"
+  [ -f "$file" ] || fail "Usage: $CMD restore backups/mailchat-YYYYMMDD-HHMMSS.tar.gz"
+  local sure
+  sure="$(ask "This replaces all current accounts with the backup. Type yes to continue" "no")"
+  [ "$sure" = "yes" ] || fail "Cancelled."
+  compose stop backend
+  compose run --rm -T --no-deps --entrypoint sh backend -c 'rm -rf /data/* && tar xzf - -C /data' <"$file"
+  compose start backend
+  ok "Restored from $file"
+}
+
+cmd_update() {
+  require_installed
+  if [ -d .git ]; then
+    bold "Downloading the latest version..."
+    git pull --ff-only
+  else
+    warn "Not a git checkout; rebuilding the current files."
+  fi
+  cmd_backup
+  bold "Rebuilding and restarting..."
+  compose up -d --build
+  ok "Updated"
+}
+
+# Try MailChat on your own computer at http://localhost:8080 (no domain, no HTTPS).
+cmd_local() {
+  if [ "${1:-}" = "remove" ]; then
+    grep -q '^LOCAL_TEST=1' .env 2>/dev/null || fail "This isn't a local test install (no LOCAL_TEST=1 in .env)."
+    compose down -v
+    rm -f .env
+    ok "Local test removed (containers, accounts and .env)"
+    return
+  fi
+
+  if [ -f .env ] && ! grep -q '^LOCAL_TEST=1' .env; then
+    fail "This folder has a real install (.env). Use a separate copy of MailChat to test locally."
+  fi
+
+  ensure_docker
+  if [ ! -f .env ]; then
+    cat >.env <<LOCAL_ENV
+# Local test install created by mailchat local. Remove it with: mailchat local remove
+LOCAL_TEST=1
+DOMAIN=mailchat.localhost
+ADMIN_EMAIL=admin@example.com
+SITE_ADDRESS=:80
+PUBLIC_URL=http://localhost:8080
+HTTP_PORT=8080
+HTTPS_PORT=8443
+LOCAL_ENV
+  fi
+
+  bold "Building and starting MailChat locally (the first time takes a few minutes)..."
+  compose up -d --build
+  wait_until_ready "http://localhost:8080" || fail "MailChat didn't start. See: $CMD logs"
+
+  echo
+  ok "MailChat is running at http://localhost:8080"
+  cat <<LOCAL_HELP
+
+  1. Open http://localhost:8080 in Chrome and create an account.
+  2. Approve it: run "$CMD" and choose "Approve new accounts".
+  3. For a second person, open http://127.0.0.1:8080 in another browser
+     or an incognito window, create an account and approve it too.
+
+  To stop:   $CMD stop          To remove everything:  $CMD local remove
+LOCAL_HELP
+}
+
+# ---------------------------------------------------------------- menu
+
+clear_screen() { printf '\033[2J\033[H'; }
+
+pause() {
+  echo
+  read -r -p "Press Enter to continue " _ </dev/tty || true
+}
+
+# Fills ROW_LOGINS/ROW_STATUS/ROW_AGES (bash 3 compatible, no mapfile).
+load_accounts() {
+  ROW_LOGINS=()
+  ROW_STATUS=()
+  ROW_AGES=()
+  local login status _created age
+  while IFS=$'\t' read -r login status _created age; do
+    [ -n "$login" ] || continue
+    ROW_LOGINS+=("$login")
+    ROW_STATUS+=("$status")
+    ROW_AGES+=("$age")
+  done < <(users list "$1" --plain 2>/dev/null || true)
+}
+
+# Turns "1 3 5" (or "1,3") into logins from ROW_LOGINS; ignores anything out of range.
+pick_logins() {
+  PICKED=()
+  local number
+  for number in ${1//,/ }; do
+    if [[ "$number" =~ ^[0-9]+$ ]] && [ "$number" -ge 1 ] && [ "$number" -le "${#ROW_LOGINS[@]}" ]; then
+      PICKED+=("${ROW_LOGINS[$((number - 1))]}")
+    fi
+  done
+}
+
+confirm() {
+  local answer
+  answer="$(ask "$1 (yes/no)" "no")"
+  [ "$answer" = "yes" ] || [ "$answer" = "y" ]
+}
+
+screen_approvals() {
+  while true; do
+    clear_screen
+    bold "Waiting for approval"
+    echo
+    dim "Loading..."
+    load_accounts pending
+    printf '\033[1A\033[2K'
+
+    if [ "${#ROW_LOGINS[@]}" -eq 0 ]; then
+      ok "Nobody is waiting."
+      pause
+      return
+    fi
+
+    local i domain
+    domain="$(env_value DOMAIN)"
+    for i in "${!ROW_LOGINS[@]}"; do
+      printf '  \033[1m%2d\033[0m  %-22s \033[2m%s · %s\033[0m\n' "$((i + 1))" "${ROW_LOGINS[$i]}" "${ROW_LOGINS[$i]}@$domain" "${ROW_AGES[$i]}"
+    done
+    echo
+    dim "  Numbers approve (e.g. 1 3) · a = approve everyone"
+    dim "  r + numbers reject and delete (e.g. r 2) · Enter = back"
+    echo
+
+    local choice
+    read -r -p "> " choice </dev/tty || return
+    case "$choice" in
+      "") return ;;
+      a | A)
+        confirm "Approve all ${#ROW_LOGINS[@]} account(s)?" && users approve "${ROW_LOGINS[@]}"
+        pause
+        ;;
+      r\ * | R\ *)
+        pick_logins "${choice:2}"
+        if [ "${#PICKED[@]}" -eq 0 ]; then
+          warn "No valid numbers."
+        elif confirm "Reject and delete ${PICKED[*]}?"; then
+          users delete "${PICKED[@]}"
+        fi
+        pause
+        ;;
+      *)
+        pick_logins "$choice"
+        if [ "${#PICKED[@]}" -eq 0 ]; then warn "No valid numbers."; else users approve "${PICKED[@]}"; fi
+        pause
+        ;;
+    esac
+  done
+}
+
+screen_accounts() {
+  while true; do
+    clear_screen
+    bold "All accounts"
+    echo
+    dim "Loading..."
+    load_accounts all
+    printf '\033[1A\033[2K'
+
+    if [ "${#ROW_LOGINS[@]}" -eq 0 ]; then
+      ok "No accounts yet."
+      pause
+      return
+    fi
+
+    local i label
+    for i in "${!ROW_LOGINS[@]}"; do
+      if [ "${ROW_STATUS[$i]}" = "approved" ]; then label=$'\033[32mapproved\033[0m'; else label=$'\033[33mwaiting\033[0m'; fi
+      printf '  \033[1m%2d\033[0m  %-22s %b  \033[2m%s\033[0m\n' "$((i + 1))" "${ROW_LOGINS[$i]}" "$label" "${ROW_AGES[$i]}"
+    done
+    echo
+    dim "  a + numbers approve · d + number delete an account · Enter = back"
+    echo
+
+    local choice
+    read -r -p "> " choice </dev/tty || return
+    case "$choice" in
+      "") return ;;
+      a\ * | A\ *)
+        pick_logins "${choice:2}"
+        if [ "${#PICKED[@]}" -eq 0 ]; then warn "No valid numbers."; else users approve "${PICKED[@]}"; fi
+        pause
+        ;;
+      d\ * | D\ *)
+        pick_logins "${choice:2}"
+        if [ "${#PICKED[@]}" -ne 1 ]; then
+          warn "Delete one account at a time, e.g. d 3"
+        else
+          echo "Deleting ${PICKED[0]} removes the account for good. Their messages on phones stay, but they can't sign in."
+          local typed
+          typed="$(ask "Type the login to confirm")"
+          if [ "$typed" = "${PICKED[0]}" ]; then users delete "${PICKED[0]}"; else warn "Not deleted."; fi
+        fi
+        pause
+        ;;
+      *)
+        warn "Use a + numbers or d + number."
+        pause
+        ;;
+    esac
+  done
+}
+
+cmd_menu() {
+  require_installed
+  has_terminal || {
+    cmd_help
+    return
+  }
+
+  while true; do
+    clear_screen
+    local running pending=0 total=0 status
+    if is_running; then
+      running=1
+      load_accounts all
+      total="${#ROW_LOGINS[@]}"
+      local s
+      for s in "${ROW_STATUS[@]+"${ROW_STATUS[@]}"}"; do [ "$s" = "pending" ] && pending=$((pending + 1)); done
+      status=$'\033[32m● running\033[0m'
+    else
+      running=0
+      status=$'\033[31m● stopped\033[0m'
+    fi
+
+    printf '\033[1mMailChat\033[0m  \033[2m%s\033[0m\n' "$(site_url)"
+    if [ "$running" -eq 1 ]; then
+      printf '%b  \033[2m·  %s account(s)\033[0m' "$status" "$total"
+      [ "$pending" -gt 0 ] && printf '  \033[33m·  %s waiting for approval\033[0m' "$pending"
+      echo
+    else
+      printf '%b\n' "$status"
+    fi
+    echo
+
+    local approvals_label="Approve new accounts"
+    [ "$pending" -gt 0 ] && approvals_label="Approve new accounts ($pending waiting)"
+    printf '  \033[1m1\033[0m  %s\n' "$approvals_label"
+    printf '  \033[1m2\033[0m  All accounts\n'
+    printf '  \033[1m3\033[0m  Status\n'
+    printf '  \033[1m4\033[0m  Back up now\n'
+    printf '  \033[1m5\033[0m  Update MailChat\n'
+    printf '  \033[1m6\033[0m  Recent logs\n'
+    if [ "$running" -eq 1 ]; then printf '  \033[1m7\033[0m  Restart\n'; else printf '  \033[1m7\033[0m  Start\n'; fi
+    printf '  \033[1mh\033[0m  All commands\n'
+    printf '  \033[1mq\033[0m  Quit\n'
+    echo
+
+    local choice
+    read -r -p "> " choice </dev/tty || {
+      echo
+      return
+    }
+    case "$choice" in
+      1) if [ "$running" -eq 1 ]; then screen_approvals; else warn "MailChat is stopped. Choose 7 to start it." && pause; fi ;;
+      2) if [ "$running" -eq 1 ]; then screen_accounts; else warn "MailChat is stopped. Choose 7 to start it." && pause; fi ;;
+      3)
+        cmd_status || true
+        pause
+        ;;
+      4)
+        cmd_backup || true
+        pause
+        ;;
+      5)
+        if confirm "Back up, download the latest version and restart?"; then cmd_update || true; fi
+        pause
+        ;;
+      6)
+        compose logs --tail=40 || true
+        pause
+        ;;
+      7)
+        if [ "$running" -eq 1 ]; then compose restart; else compose up -d; fi
+        pause
+        ;;
+      h | H)
+        cmd_help
+        pause
+        ;;
+      q | Q | "") return ;;
+    esac
+  done
+}
+
+cmd_help() {
+  cat <<EOF
+MailChat server helper
+
+  $CMD                     open the menu (approve people, back up, update...)
+  $CMD install             set up MailChat on this server (asks two questions)
+  $CMD approve             list accounts waiting for approval
+  $CMD approve LOGIN       approve accounts (you can list several)
+  $CMD delete LOGIN        delete an account (also rejects a waiting one)
+  $CMD status              check that everything is running
+  $CMD logs                follow what the server is doing (Ctrl+C to quit)
+  $CMD backup              save accounts and server secrets to backups/
+  $CMD restore FILE        restore a backup
+  $CMD update              back up, download the latest version, restart
+  $CMD restart             restart after editing .env
+  $CMD https               get the HTTPS certificate (when running behind nginx)
+  $CMD stop | start        stop or start MailChat
+  $CMD local               try MailChat on this computer at http://localhost:8080
+  $CMD local remove        delete the local test install
+  $CMD link | unlink       add or remove the global "mailchat" command
+
+Installed in: $MAILCHAT_HOME
+Full guide: docs/INSTALL.md
+EOF
+}
+
+case "${1:-}" in
+  "")
+    if [ -f .env ]; then cmd_menu; else cmd_help; fi
+    ;;
+  menu) cmd_menu ;;
+  install) cmd_install ;;
+  local) shift && cmd_local "$@" ;;
+  approve) shift && cmd_approve "$@" ;;
+  delete | reject) shift && cmd_reject "$@" ;;
+  status) cmd_status ;;
+  logs) require_installed && compose logs -f --tail=100 ;;
+  backup) cmd_backup ;;
+  restore) shift && cmd_restore "$@" ;;
+  update) cmd_update ;;
+  restart) require_installed && compose up -d && compose restart ;;
+  stop) require_installed && compose stop ;;
+  start) require_installed && compose up -d ;;
+  https) cmd_https ;;
+  link) shift && cmd_link "$@" ;;
+  unlink) cmd_unlink ;;
+  help | --help | -h) cmd_help ;;
+  *) fail "Unknown command \"$1\". Run: $CMD help" ;;
+esac

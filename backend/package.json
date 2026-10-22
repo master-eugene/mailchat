@@ -1,0 +1,62 @@
+{
+  "name": "mailchat-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MailChat server: SMTP mailbox, Web Push relay and sync API",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/master-eugene/mailchat.git",
+    "directory": "backend"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "approve": "tsx scripts/users.ts approve",
+    "vapid:generate": "web-push generate-vapid-keys",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:smoke": "node test/smoke.mjs",
+    "users": "tsx scripts/users.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.9.46",
+    "nodemailer": "^7.0.13",
+    "smtp-server": "^3.20.2",
+    "web-push": "^3.6.7",
+    "ws": "^8.22.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^24.10.1",
+    "@types/nodemailer": "^8.0.2",
+    "@types/smtp-server": "^3.5.13",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.18.2",
+    "libsodium-wrappers": "^0.8.4",
+    "prettier": "^3.3.3",
+    "prisma": "^6.19.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
