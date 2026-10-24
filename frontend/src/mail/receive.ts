@@ -1,4 +1,6 @@
 // Shared by the app and the service worker, so it uses only fetch and IndexedDB (no axios, no window).
+import Dexie from 'dexie';
+
 import { chatKey, db, getSetting, type LocalMessage } from '../db/indexedDb';
 import { getCurrentUser } from '../db/userRepository';
 import { decryptEnvelope, parseEnvelope } from './envelope';
@@ -129,4 +131,20 @@ export const syncMailbox = async () => {
 
   await flushAcks();
   return results;
+};
+
+// Deletes a message from this device only, and updates the chat preview to the newest one left.
+export const removeMessage = async (ownerId: string, message: LocalMessage) => {
+  await db.transaction('rw', db.messages, db.chats, async () => {
+    await db.messages.delete(message.id);
+    const newest = await db.messages
+      .where('[ownerId+peer+sentAt]')
+      .between([ownerId, message.peer, Dexie.minKey], [ownerId, message.peer, Dexie.maxKey])
+      .last();
+    await db.chats.update(chatKey(ownerId, message.peer), {
+      lastBody: newest?.body ?? '',
+      lastOut: newest ? newest.direction === 'out' : false,
+      ...(newest && { lastAt: newest.sentAt }),
+    });
+  });
 };

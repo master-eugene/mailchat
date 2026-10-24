@@ -115,5 +115,9 @@
   "backup_missing": "Tap “Choose the backup file” first, or paste the backup text",
   "passphrase_missing": "Enter the backup passphrase",
   "backup_paste_missing": "Paste the backup text into the box above first",
-  "backup_in_passphrase": "That was the backup text, so it’s now in the right box. Enter the passphrase you chose for the backup."
+  "backup_in_passphrase": "That was the backup text, so it’s now in the right box. Enter the passphrase you chose for the backup.",
+  "message_copy": "Copy",
+  "message_remove": "Delete",
+  "message_copied": "Copied",
+  "message_copy_failed": "Couldn't copy the message"
 }

@@ -8,6 +8,21 @@
     overscroll-behavior: none;
   }
 
+  /* Like a native app: no text selection or iOS long-press callout anywhere, except where you type. */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  input,
+  textarea,
+  [contenteditable='true'] {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+
   /* Pinned to the visible area. --app-height follows the space above the on-screen keyboard
      (set in App.tsx), so the message bar stays put instead of the whole page sliding. */
   :root {
@@ -117,5 +132,130 @@
   100% {
     opacity: 0;
     transform: translateY(100%);
+  }
+}
+
+/* Screen transitions (View Transitions API; see router/useHashRoute.ts). Browsers without it
+   simply switch screens instantly. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 300ms;
+  animation-timing-function: cubic-bezier(0.25, 0.9, 0.3, 1);
+}
+
+:root[data-nav='forward']::view-transition-old(root) {
+  animation-name: mc-push-out;
+}
+
+:root[data-nav='forward']::view-transition-new(root) {
+  animation-name: mc-push-in;
+}
+
+:root[data-nav='back']::view-transition-old(root) {
+  animation-name: mc-pop-out;
+  z-index: 1;
+}
+
+:root[data-nav='back']::view-transition-new(root) {
+  animation-name: mc-pop-in;
+}
+
+:root[data-nav='fade']::view-transition-old(root),
+:root[data-nav='fade']::view-transition-new(root) {
+  animation-duration: 180ms;
+}
+
+/* The tab bar stays put while tabs cross-fade. */
+.mc-tabbar {
+  view-transition-name: mc-tabbar;
+}
+
+@keyframes mc-push-in {
+  from {
+    transform: translateX(var(--mc-slide, 100%));
+  }
+}
+
+@keyframes mc-push-out {
+  to {
+    transform: translateX(calc(var(--mc-slide, 100%) * -0.3));
+    opacity: 0.6;
+  }
+}
+
+@keyframes mc-pop-in {
+  from {
+    transform: translateX(calc(var(--mc-slide, 100%) * -0.3));
+    opacity: 0.6;
+  }
+}
+
+@keyframes mc-pop-out {
+  to {
+    transform: translateX(var(--mc-slide, 100%));
+  }
+}
+
+:root[dir='rtl'] {
+  --mc-slide: -100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* Message long-press menu and removal (see ConversationView). */
+.mc-message-row {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows 260ms ease,
+    opacity 200ms ease,
+    transform 220ms ease,
+    margin 260ms ease;
+}
+
+.mc-message-row > * {
+  min-height: 0;
+}
+
+.mc-message-row[data-removing] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: scale(0.85);
+  margin-top: 0;
+}
+
+/* A long press opens the message menu (text selection is off app-wide, see the top). */
+.mc-bubble {
+  transition: transform 150ms ease;
+}
+
+.mc-bubble[data-pressed] {
+  transform: scale(0.96);
+}
+
+@keyframes mc-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+.mc-menu {
+  animation: mc-menu-in 140ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-message-row,
+  .mc-bubble {
+    transition: none;
+  }
+  .mc-menu {
+    animation: none;
   }
 }

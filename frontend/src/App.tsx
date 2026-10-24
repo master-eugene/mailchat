@@ -78,7 +78,7 @@ const Messenger: FC<{ route: Route }> = ({ route }) => {
     <div className='flex h-full w-full flex-col'>
       <div className='min-h-0 flex-1'>{screen}</div>
       {showTabs && (
-        <nav className='flex shrink-0 border-t border-[var(--mc-border)] bg-[var(--mc-panel)] pb-[var(--safe-bottom)]'>
+        <nav className='mc-tabbar flex shrink-0 border-t border-[var(--mc-border)] bg-[var(--mc-panel)] pb-[var(--safe-bottom)]'>
           {tabs.map(({ route: tab, hash, label, Icon }) => (
             <button
               key={tab}

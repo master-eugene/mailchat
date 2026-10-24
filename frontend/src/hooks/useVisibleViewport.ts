@@ -9,11 +9,23 @@ const useVisibleViewport = () => {
     if (!viewport) return;
 
     const root = document.documentElement;
+    // The tallest the visible area has been at this width: the height with the keyboard closed.
+    // (Comparing with window.innerHeight isn't reliable: in Home Screen apps iOS shrinks it too.)
+    let fullHeight = viewport.height;
+    let width = viewport.width;
+
     const update = () => {
+      if (Math.abs(viewport.width - width) > 1) {
+        // Rotated: start over for the new orientation.
+        width = viewport.width;
+        fullHeight = viewport.height;
+      }
+      fullHeight = Math.max(fullHeight, viewport.height);
+
       root.style.setProperty('--app-height', `${Math.round(viewport.height)}px`);
-      // Keyboard up: the visible area is much shorter than the window. The home-bar space at the
-      // bottom (safe area) is then covered by the keyboard, so it isn't reserved (see style.css).
-      root.dataset.keyboard = window.innerHeight - viewport.height > 120 ? 'open' : 'closed';
+      // Keyboard up: the home-bar space at the bottom (safe area) is covered by the keyboard,
+      // so it isn't reserved (see style.css).
+      root.dataset.keyboard = fullHeight - viewport.height > 150 ? 'open' : 'closed';
       if (window.scrollY !== 0) window.scrollTo(0, 0);
     };
 
